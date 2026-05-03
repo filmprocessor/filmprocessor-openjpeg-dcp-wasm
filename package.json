@@ -1,0 +1,37 @@
+{
+  "name": "@filmprocessor/openjpeg-dcp-wasm",
+  "version": "0.1.0",
+  "description": "Emscripten build script and C wrapper for DCP-oriented OpenJPEG WebAssembly builds.",
+  "type": "module",
+  "files": [
+    "src",
+    "scripts",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "scan": "node scripts/security-scan.js"
+  },
+  "keywords": [
+    "openjpeg",
+    "jpeg2000",
+    "dcp",
+    "wasm",
+    "emscripten"
+  ],
+  "license": "BSD-2-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/filmprocessor/filmprocessor-openjpeg-dcp-wasm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/filmprocessor/filmprocessor-openjpeg-dcp-wasm/issues"
+  },
+  "homepage": "https://github.com/filmprocessor/filmprocessor-openjpeg-dcp-wasm#readme",
+  "engines": {
+    "node": ">=20"
+  }
+}

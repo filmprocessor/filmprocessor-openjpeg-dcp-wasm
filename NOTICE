@@ -1,0 +1,12 @@
+FilmProcessor OpenJPEG DCP Wasm
+Copyright (c) 2026 Psyché Tropes Limited
+
+This package contains FilmProcessor's DCP-oriented OpenJPEG WebAssembly build
+script and C wrapper.
+
+OpenJPEG is developed by the OpenJPEG project and is licensed under the
+2-clause BSD License. Source: https://github.com/uclouvain/openjpeg
+
+No FilmProcessor production DCP authoring pipeline, MXF writer, server endpoint
+configuration, credentials, deployment settings, commercial fonts, brand assets,
+or generated Wasm binaries are intentionally included in this package.
