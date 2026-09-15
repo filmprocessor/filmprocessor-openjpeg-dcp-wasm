@@ -30,6 +30,11 @@
 #define DCP_DWT_2K       5
 #define DCP_DWT_4K       6
 
+/* Guard bits are fixed per resolution: 1 for 2K, 2 for 4K. A Bv2.1 verifier
+ * rejects a 2K codestream with 2 and a 4K codestream with 1. */
+#define DCP_GUARD_BITS_2K "GUARD_BITS=1"
+#define DCP_GUARD_BITS_4K "GUARD_BITS=2"
+
 /* Memory stream state for OpenJPEG output */
 typedef struct {
     uint8_t *data;
@@ -168,19 +173,23 @@ uint8_t* openjpeg_encode_xyz(
 
     /* Profile-specific settings */
     int numDwtLevels;
+    const char *guardBitsOption;
     switch (cinemaProfile) {
         case CINEMA_2K_24:
         case CINEMA_2K_48:
             parameters.rsiz = OPJ_PROFILE_CINEMA_2K;
             numDwtLevels = DCP_DWT_2K;  /* 5 DWT levels */
+            guardBitsOption = DCP_GUARD_BITS_2K;
             break;
         case CINEMA_4K_24:
             parameters.rsiz = OPJ_PROFILE_CINEMA_4K;
             numDwtLevels = DCP_DWT_4K;  /* 6 DWT levels */
+            guardBitsOption = DCP_GUARD_BITS_4K;
             break;
         default:
             parameters.rsiz = OPJ_PROFILE_CINEMA_2K;
             numDwtLevels = DCP_DWT_2K;
+            guardBitsOption = DCP_GUARD_BITS_2K;
             break;
     }
 
@@ -282,10 +291,10 @@ uint8_t* openjpeg_encode_xyz(
         return NULL;
     }
 
-    /* DCI compliance: Set guard bits to 1 (SMPTE ST 429-4 requirement).
-     * OpenJPEG defaults to 2 guard bits; DCI requires exactly 1 for 2K/4K.
+    /* Guard bits for the selected profile (see DCP_GUARD_BITS_2K/_4K).
+     * OpenJPEG defaults to 2, so both counts are set explicitly.
      * Must be called AFTER opj_setup_encoder, BEFORE opj_start_compress. */
-    const char* extra_options[] = {"GUARD_BITS=1", NULL};
+    const char* extra_options[] = {guardBitsOption, NULL};
     if (!opj_encoder_set_extra_options(codec, extra_options)) {
         opj_destroy_codec(codec);
         opj_image_destroy(image);
