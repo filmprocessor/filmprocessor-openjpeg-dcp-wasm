@@ -16,3 +16,19 @@ test("C wrapper exposes encode, decode, and free functions", async () => {
   assert.match(wrapper, /openjpeg_decode_j2k/);
   assert.match(wrapper, /openjpeg_free_buffer/);
 });
+
+test("C wrapper writes 1 guard bit for 2K and 2 for 4K", async () => {
+  const wrapper = await readFile(new URL("../src/openjpeg_dcp_wrapper.c", import.meta.url), "utf8");
+  assert.match(wrapper, /#define DCP_GUARD_BITS_2K "GUARD_BITS=1"/);
+  assert.match(wrapper, /#define DCP_GUARD_BITS_4K "GUARD_BITS=2"/);
+
+  const caseBody = (label) => {
+    const start = wrapper.indexOf(`${label}:`);
+    assert.notEqual(start, -1, `missing ${label} case`);
+    return wrapper.slice(start, wrapper.indexOf("break;", start));
+  };
+  assert.match(caseBody("case CINEMA_2K_48"), /guardBitsOption = DCP_GUARD_BITS_2K;/);
+  assert.match(caseBody("case CINEMA_4K_24"), /guardBitsOption = DCP_GUARD_BITS_4K;/);
+  assert.match(caseBody("default"), /guardBitsOption = DCP_GUARD_BITS_2K;/);
+  assert.match(wrapper, /extra_options\[\] = \{guardBitsOption, NULL\}/);
+});
