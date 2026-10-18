@@ -9,6 +9,7 @@
  * Exported functions:
  *   openjpeg_encode_xyz()  - Encode XYZ image data to JPEG2000 codestream
  *   openjpeg_decode_j2k()  - Decode JPEG2000 codestream to XYZ image data
+ *   openjpeg_decode_j2k_reduced() - Decode with top resolution levels discarded
  *   openjpeg_free_buffer() - Free buffer allocated by encoder/decoder
  *
  * Build: See build_openjpeg_wasm.sh
@@ -19,16 +20,23 @@
 #include <stdio.h>
 #include <openjpeg.h>
 
-/* Cinema profile constants (match JS-side enum) */
+/* Cinema profile constants (match JS-side enum).
+ * Mode 3 selects 4K DCP codestream settings; JS applies the FPS-specific
+ * max codestream budget before calling into this wrapper. */
 #define CINEMA_2K_24 1
 #define CINEMA_2K_48 2
-#define CINEMA_4K_24 3
+#define CINEMA_4K 3
 
 /* DCP encoding constants */
 #define DCP_BIT_DEPTH    12
 #define DCP_NUM_COMPS    3
 #define DCP_DWT_2K       5
 #define DCP_DWT_4K       6
+
+/* Guard bits are fixed per resolution: 1 for 2K, 2 for 4K. A Bv2.1 verifier
+ * rejects a 2K codestream with 2 and a 4K codestream with 1. */
+#define DCP_GUARD_BITS_2K "GUARD_BITS=1"
+#define DCP_GUARD_BITS_4K "GUARD_BITS=2"
 
 /* Memory stream state for OpenJPEG output */
 typedef struct {
@@ -126,8 +134,12 @@ static void mem_free(void *p_user_data) {
  *                      stored as X0,Y0,Z0, X1,Y1,Z1, ... in 12-bit range 0-4095)
  * @param width         Image width in pixels
  * @param height        Image height in pixels
- * @param cinemaProfile Cinema profile: 1=2K@24, 2=2K@48, 3=4K@24
+ * @param cinemaProfile Cinema profile: 1=2K@24/25/30, 2=2K@48/50/60,
+ *                      3=4K at any supported DCI frame rate
  * @param maxCodestreamSize Maximum output size in bytes (DCI bitrate limit)
+ * @param maxComponentSize  Maximum bytes per colour component (DCI constrains
+ *                          each component to 200 Mbit/s alongside the
+ *                          250 Mbit/s aggregate; 0 disables the cap)
  * @param outputSize    Pointer to int that receives the output codestream size
  *
  * @return Pointer to the JPEG2000 codestream buffer (caller must free with
@@ -139,6 +151,7 @@ uint8_t* openjpeg_encode_xyz(
     int height,
     int cinemaProfile,
     int maxCodestreamSize,
+    int maxComponentSize,
     int* outputSize
 ) {
     opj_cparameters_t parameters;
@@ -160,27 +173,34 @@ uint8_t* openjpeg_encode_xyz(
      * codestream generation. */
     parameters.cp_comment = "libdcp";
 
-    /* Configure DCP-compliant JPEG2000 encoding parameters explicitly.
-     * IMPORTANT: We do NOT use the deprecated cp_cinema field (OPJ_CINEMA2K_24 etc.)
-     * because OpenJPEG 2.5.0's internal cinema setup function can conflict with
-     * explicit max_cs_size, causing rate-control non-convergence.
-     * Instead, we set all required parameters individually per SMPTE ST 429-4. */
+    /* Configure DCP-compliant JPEG2000 encoding parameters explicitly per
+     * SMPTE ST 429-4. Note: because rsiz is a cinema profile, OpenJPEG 2.5.0
+     * still runs opj_j2k_set_cinema_parameters() internally — it clamps
+     * max_cs_size/max_comp_size to the DCI 24/48fps constants and forces one
+     * tile-part per component (tp_flag 'C'), so each tile-part's Psot carries
+     * ~14 bytes of SOT+SOD overhead on top of the component's coded bytes.
+     * Budgets passed in here must therefore stay comfortably under the DCI
+     * ceilings; the clamp is a backstop, not a substitute. */
 
     /* Profile-specific settings */
     int numDwtLevels;
+    const char *guardBitsOption;
     switch (cinemaProfile) {
         case CINEMA_2K_24:
         case CINEMA_2K_48:
             parameters.rsiz = OPJ_PROFILE_CINEMA_2K;
             numDwtLevels = DCP_DWT_2K;  /* 5 DWT levels */
+            guardBitsOption = DCP_GUARD_BITS_2K;
             break;
-        case CINEMA_4K_24:
+        case CINEMA_4K:
             parameters.rsiz = OPJ_PROFILE_CINEMA_4K;
             numDwtLevels = DCP_DWT_4K;  /* 6 DWT levels */
+            guardBitsOption = DCP_GUARD_BITS_4K;
             break;
         default:
             parameters.rsiz = OPJ_PROFILE_CINEMA_2K;
             numDwtLevels = DCP_DWT_2K;
+            guardBitsOption = DCP_GUARD_BITS_2K;
             break;
     }
 
@@ -223,10 +243,17 @@ uint8_t* openjpeg_encode_xyz(
         }
     }
 
-    /* Rate control: max codestream size from DCI bitrate limit */
+    /* Rate control: max codestream size from DCI bitrate limit. The
+     * per-component cap must be a fraction of the frame budget (libdcp uses
+     * frame/1.25, mirroring DCI's 200-of-250 Mbit/s component share). Reusing
+     * the whole frame budget as max_comp_size lets one energy-dominant
+     * component saturate the entire frame allowance, overshooting both the
+     * requested bitrate and the DCI per-component limit. */
     if (maxCodestreamSize > 0) {
         parameters.max_cs_size = maxCodestreamSize;
-        parameters.max_comp_size = maxCodestreamSize;  /* Per-component limit */
+    }
+    if (maxComponentSize > 0) {
+        parameters.max_comp_size = maxComponentSize;
     }
 
     /* Create image component parameters */
@@ -282,10 +309,10 @@ uint8_t* openjpeg_encode_xyz(
         return NULL;
     }
 
-    /* DCI compliance: Set guard bits to 1 (SMPTE ST 429-4 requirement).
-     * OpenJPEG defaults to 2 guard bits; DCI requires exactly 1 for 2K/4K.
+    /* Guard bits for the selected profile (see DCP_GUARD_BITS_2K/_4K).
+     * OpenJPEG defaults to 2, so both counts are set explicitly.
      * Must be called AFTER opj_setup_encoder, BEFORE opj_start_compress. */
-    const char* extra_options[] = {"GUARD_BITS=1", NULL};
+    const char* extra_options[] = {guardBitsOption, NULL};
     if (!opj_encoder_set_extra_options(codec, extra_options)) {
         opj_destroy_codec(codec);
         opj_image_destroy(image);
@@ -413,24 +440,15 @@ static OPJ_OFF_T mem_read_skip(OPJ_OFF_T p_nb_bytes, void *p_user_data) {
 }
 
 /**
- * Decode a JPEG2000 codestream (raw J2K, as found in DCP MXF files) to
- * interleaved component data.
- *
- * @param j2kData    Pointer to raw J2K codestream bytes
- * @param j2kSize    Size of the codestream in bytes
- * @param outWidth   Receives decoded image width
- * @param outHeight  Receives decoded image height
- * @param outNumComps Receives number of components (typically 3 for XYZ)
- * @param outBitDepth Receives component bit depth (typically 12 for DCP)
- *
- * @return Pointer to interleaved int32 component data
- *         [C0_0, C1_0, C2_0, C0_1, C1_1, C2_1, ...] where Cn_i is
- *         component n at pixel i. Caller must free with openjpeg_free_buffer().
- *         Returns NULL on failure.
+ * Decode a JPEG2000 codestream, discarding the `reduce` highest resolution
+ * levels. 0 decodes at full resolution. Each discarded level halves both
+ * dimensions (rounding up) and skips that level's code-blocks and inverse
+ * wavelet stage.
  */
-int32_t* openjpeg_decode_j2k(
+static int32_t* decode_j2k(
     uint8_t* j2kData,
     int j2kSize,
+    int reduce,
     int* outWidth,
     int* outHeight,
     int* outNumComps,
@@ -451,10 +469,16 @@ int32_t* openjpeg_decode_j2k(
         fprintf(stderr, "[DCP Decode] Invalid input: data=%p size=%d\n", (void*)j2kData, j2kSize);
         return NULL;
     }
+    if (reduce < 0) {
+        fprintf(stderr, "[DCP Decode] Invalid resolution reduction: %d\n", reduce);
+        return NULL;
+    }
 
     /* Set default decoder parameters */
     opj_set_default_decoder_parameters(&parameters);
     parameters.decod_format = 0; /* J2K raw codestream */
+    /* OpenJPEG refuses a reduction that leaves no resolution level. */
+    parameters.cp_reduce = (OPJ_UINT32)reduce;
 
     /* Create J2K decompressor (raw codestream, not JP2 container) */
     codec = opj_create_decompress(OPJ_CODEC_J2K);
@@ -503,13 +527,11 @@ int32_t* openjpeg_decode_j2k(
         return NULL;
     }
 
-    OPJ_UINT32 width  = image->x1 - image->x0;
-    OPJ_UINT32 height = image->y1 - image->y0;
     OPJ_UINT32 numComps = image->numcomps;
     OPJ_UINT32 bitDepth = image->comps[0].prec;
 
-    fprintf(stderr, "[DCP Decode] Header: %ux%u, %u components, %u-bit\n",
-            width, height, numComps, bitDepth);
+    fprintf(stderr, "[DCP Decode] Header: %ux%u, %u components, %u-bit, reduce %d\n",
+            image->x1 - image->x0, image->y1 - image->y0, numComps, bitDepth, reduce);
 
     /* Decode the image */
     if (!opj_decode(codec, stream, image)) {
@@ -525,10 +547,27 @@ int32_t* openjpeg_decode_j2k(
         /* Non-fatal: image data may still be valid, continue */
     }
 
+    /* The decoded size is the components' size. With levels discarded
+     * OpenJPEG shrinks each component but leaves the image grid (x0..x1,
+     * y0..y1) at full size; at full resolution the two agree for every DCP
+     * codestream, whose components are never subsampled. The interleave
+     * below needs every component on one grid, so anything else is refused
+     * rather than read past a smaller component's plane. */
+    OPJ_UINT32 width  = image->comps[0].w;
+    OPJ_UINT32 height = image->comps[0].h;
+
     /* Verify component data is present */
     for (OPJ_UINT32 c = 0; c < numComps; c++) {
         if (!image->comps[c].data) {
             fprintf(stderr, "[DCP Decode] Component %u has no data\n", c);
+            opj_image_destroy(image);
+            opj_stream_destroy(stream);
+            opj_destroy_codec(codec);
+            return NULL;
+        }
+        if (image->comps[c].w != width || image->comps[c].h != height) {
+            fprintf(stderr, "[DCP Decode] Component %u is %ux%u, not %ux%u\n",
+                    c, image->comps[c].w, image->comps[c].h, width, height);
             opj_image_destroy(image);
             opj_stream_destroy(stream);
             opj_destroy_codec(codec);
@@ -570,4 +609,49 @@ int32_t* openjpeg_decode_j2k(
     opj_destroy_codec(codec);
 
     return outputBuffer;
+}
+
+/**
+ * Decode a JPEG2000 codestream (raw J2K, as found in DCP MXF files) to
+ * interleaved component data at full resolution.
+ *
+ * @param j2kData    Pointer to raw J2K codestream bytes
+ * @param j2kSize    Size of the codestream in bytes
+ * @param outWidth   Receives decoded image width
+ * @param outHeight  Receives decoded image height
+ * @param outNumComps Receives number of components (typically 3 for XYZ)
+ * @param outBitDepth Receives component bit depth (typically 12 for DCP)
+ *
+ * @return Pointer to interleaved int32 component data
+ *         [C0_0, C1_0, C2_0, C0_1, C1_1, C2_1, ...] where Cn_i is
+ *         component n at pixel i. Caller must free with openjpeg_free_buffer().
+ *         Returns NULL on failure.
+ */
+int32_t* openjpeg_decode_j2k(
+    uint8_t* j2kData,
+    int j2kSize,
+    int* outWidth,
+    int* outHeight,
+    int* outNumComps,
+    int* outBitDepth
+) {
+    return decode_j2k(j2kData, j2kSize, 0, outWidth, outHeight, outNumComps, outBitDepth);
+}
+
+/**
+ * Decode a JPEG2000 codestream with its `reduce` highest resolution levels
+ * discarded: 1 turns a 4K DCP codestream into its 2K picture for about half
+ * the decode time. Output layout and ownership are as for
+ * openjpeg_decode_j2k(); the out-params receive the reduced size.
+ */
+int32_t* openjpeg_decode_j2k_reduced(
+    uint8_t* j2kData,
+    int j2kSize,
+    int reduce,
+    int* outWidth,
+    int* outHeight,
+    int* outNumComps,
+    int* outBitDepth
+) {
+    return decode_j2k(j2kData, j2kSize, reduce, outWidth, outHeight, outNumComps, outBitDepth);
 }

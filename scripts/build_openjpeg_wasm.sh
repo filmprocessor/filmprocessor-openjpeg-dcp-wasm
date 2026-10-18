@@ -131,7 +131,7 @@ emcc -O3 -flto \
     -s WASM=1 \
     -s MODULARIZE=1 \
     -s EXPORT_ES6=1 \
-    -s EXPORTED_FUNCTIONS='["_openjpeg_encode_xyz","_openjpeg_decode_j2k","_openjpeg_free_buffer","_malloc","_free"]' \
+    -s EXPORTED_FUNCTIONS='["_openjpeg_encode_xyz","_openjpeg_decode_j2k","_openjpeg_decode_j2k_reduced","_openjpeg_free_buffer","_malloc","_free"]' \
     -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","setValue","getValue","HEAP32","HEAPU8"]' \
     -s ALLOW_MEMORY_GROWTH=1 \
     -s INITIAL_MEMORY=268435456 \

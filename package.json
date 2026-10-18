@@ -1,6 +1,6 @@
 {
   "name": "@filmprocessor/openjpeg-dcp-wasm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Emscripten build script and C wrapper for DCP-oriented OpenJPEG WebAssembly builds.",
   "type": "module",
   "files": [
@@ -12,8 +12,9 @@
     "SECURITY.md"
   ],
   "scripts": {
-    "test": "node --test",
-    "scan": "node scripts/security-scan.js"
+    "test": "node --test test/package.test.js",
+    "scan": "node scripts/security-scan.js",
+    "test:wasm": "node --test test/wasm-regression.js test/wasm-guard-bits.js"
   },
   "keywords": [
     "openjpeg",
